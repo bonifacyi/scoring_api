@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import abc
+import re
 import json
 import datetime
 import logging
@@ -38,55 +39,182 @@ GENDERS = {
 }
 
 
-class CharField(object):
+class CharField:
     def __init__(self, required, nullable):
         self.required = required
         self.nullable = nullable
+        self.field = None
 
+    def __eq__(self, other):
+        return self.field == other
+
+    def __add__(self, other):
+        return self.field + other
+
+    def __radd__(self, other):
+        return other + self.field
+
+    def _check_field(self):
+        return isinstance(self.field, str)
+
+    @property
     def valid(self):
-        pass
+        if self.field is None:
+            return not self.required
+        if not self.field:
+            return self.nullable
+        return self._check_field()
 
 
-class ArgumentsField(object):
-    pass
+class ArgumentsField(CharField):
+    def __init__(self, required, nullable):
+        super().__init__(required, nullable)
+
+    def _check_field(self):
+        return isinstance(self.field, dict)
 
 
 class EmailField(CharField):
-    pass
+    def __init__(self, required, nullable):
+        super().__init__(required, nullable)
+
+    def _check_field(self):
+        if isinstance(self.field, str):
+            return bool(re.match("^[^@\\s]+@[a-z0-9\\-\\.]+$", self.field, re.IGNORECASE))
 
 
-class PhoneField(object):
-    pass
+class PhoneField(CharField):
+    def __init__(self, required, nullable):
+        super().__init__(required, nullable)
+
+    def _check_field(self):
+        if isinstance(self.field, int):
+            self.field = str(self.field)
+        if isinstance(self.field, str):
+            return bool(re.match("^7\\d{10}$", self.field))
 
 
-class DateField(object):
-    pass
+class DateField(CharField):
+    def __init__(self, required, nullable):
+        super().__init__(required, nullable)
+
+    def _check_field(self):
+        if isinstance(self.field, str):
+            return bool(re.match("^\\d{2}\\.\\d{2}\\.\\d{4}$", self.field))
 
 
-class BirthDayField(object):
-    pass
+class BirthDayField(CharField):
+    def __init__(self, required, nullable):
+        super().__init__(required, nullable)
+
+    def _check_field(self):
+        if isinstance(self.field, str):
+            if re.match("^\\d{2}\\.\\d{2}\\.\\d{4}$", self.field):
+                age = datetime.datetime.now() - datetime.datetime.strptime(self.field, '%d.%m.%Y')
+                return (age.days // 365) <= 70
 
 
-class GenderField(object):
-    pass
+class GenderField(CharField):
+    def __init__(self, required, nullable):
+        super().__init__(required, nullable)
+
+    def _check_field(self):
+        return self.field in (0, 1, 2)
 
 
-class ClientIDsField(object):
-    pass
+class ClientIDsField(CharField):
+    def __init__(self, required, nullable):
+        super().__init__(required, nullable)
+
+    def _check_field(self):
+        if isinstance(self.field, list):
+            for i in self.field:
+                if not isinstance(i, int):
+                    return False
+            return True
 
 
-class ClientsInterestsRequest(object):
-    client_ids = ClientIDsField(required=True)
+class ClientsInterestsRequest:
+    client_ids = ClientIDsField(required=True, nullable=False)
     date = DateField(required=False, nullable=True)
 
+    fields = {
+        'client_ids': client_ids,
+        'date': date,
+    }
 
-class OnlineScoreRequest(object):
+    def __init__(self, request_body, store):
+        self.request_body = request_body
+        self.store = store
+
+        for key, value in request_body.arguments.field.items():
+            if key in self.fields:
+                self.fields[key].field = value
+
+    def get_score(self):
+        return scoring.get_interests(
+            store=self.store,
+            cid=self.client_ids.field,
+        )
+
+    @property
+    def valid(self):
+        return self.client_ids.valid and self.date.valid
+
+
+class OnlineScoreRequest:
     first_name = CharField(required=False, nullable=True)
     last_name = CharField(required=False, nullable=True)
     email = EmailField(required=False, nullable=True)
     phone = PhoneField(required=False, nullable=True)
     birthday = BirthDayField(required=False, nullable=True)
     gender = GenderField(required=False, nullable=True)
+
+    fields = {
+        'first_name': first_name,
+        'last_name': last_name,
+        'email': email,
+        'phone': phone,
+        'birthday': birthday,
+        'gender': gender,
+    }
+
+    def __init__(self, request_body, store):
+        self.request_body = request_body
+        self.store = store
+
+        for key, value in request_body.arguments.field.items():
+            if key in self.fields:
+                self.fields[key].field = value
+
+    def get_score(self):
+        if self.request_body.is_admin:
+            return 42
+        return scoring.get_score(
+            store=self.store,
+            phone=self.phone.field,
+            email=self.email.field,
+            birthday=self.birthday.field,
+            gender=self.gender.field,
+            first_name=self.first_name.field,
+            last_name=self.last_name.field,
+        )
+
+    @property
+    def valid(self):
+        return ((
+                    self.first_name.valid and
+                    self.last_name.valid and
+                    self.email.valid and
+                    self.phone.valid and
+                    self.birthday.valid and
+                    self.gender.valid
+                ) and
+                (
+                    (self.email.field and self.phone.field) or
+                    (self.first_name.field and self.last_name.field) or
+                    (self.gender.field and self.birthday.field)
+                ))
 
 
 class MethodRequest:
@@ -96,8 +224,26 @@ class MethodRequest:
     arguments = ArgumentsField(required=True, nullable=True)
     method = CharField(required=True, nullable=False)
 
-    def __init__(self, request_body):
-        self.request_body = request_body
+    fields = {
+        'account': account,
+        'login': login,
+        'token': token,
+        'arguments': arguments,
+        'method': method
+    }
+
+    def __init__(self, request):
+        for key, value in request.items():
+            if key in self.fields:
+                self.fields[key].field = value
+
+    @property
+    def valid(self):
+        return (self.account.valid
+                and self.login.valid
+                and self.token.valid
+                and self.method.valid
+                and self.arguments.valid)
 
     @property
     def is_admin(self):
@@ -106,19 +252,44 @@ class MethodRequest:
 
 def check_auth(request):
     if request.is_admin:
-        digest = hashlib.sha512(datetime.datetime.now().strftime("%Y%m%d%H") + ADMIN_SALT).hexdigest()
+        digest = hashlib.sha512(
+            (datetime.datetime.now().strftime("%Y%m%d%H") + ADMIN_SALT).encode()
+        ).hexdigest()
     else:
-        digest = hashlib.sha512(request.account + request.login + SALT).hexdigest()
+        digest = hashlib.sha512(
+            (request.account + request.login + SALT).encode()
+        ).hexdigest()
     if digest == request.token:
         return True
     return False
 
 
 def method_handler(request, ctx, store):
+    response, code = None, None
+    method = None
     request_body = MethodRequest(request['body'])
     auth = check_auth(request_body)
 
-    response, code = None, None
+    if auth:
+        if request_body.valid:
+            if request_body.method == 'online_score':
+                method = OnlineScoreRequest(request_body, store)
+            elif request_body.method == 'clients_interests':
+                method = ClientsInterestsRequest(request_body, store)
+            else:
+                code = INVALID_REQUEST
+        else:
+            code = INVALID_REQUEST
+    else:
+        code = FORBIDDEN
+
+    if method:
+        if method.valid:
+            response = method.get_score()
+            code = OK
+        else:
+            code = INVALID_REQUEST
+
     return response, code
 
 
