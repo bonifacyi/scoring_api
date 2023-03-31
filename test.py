@@ -35,7 +35,8 @@ class TestSuite(unittest.TestCase):
             request["token"] = hashlib.sha512(msg.encode()).hexdigest()
 
     def test_empty_request(self):
-        _, code = self.get_response({})
+        request = {}
+        msg, code = self.get_response(request)
         self.assertEqual(api.INVALID_REQUEST, code)
 
     @cases([

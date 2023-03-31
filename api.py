@@ -49,21 +49,34 @@ class CharField:
         return self.field == other
 
     def __add__(self, other):
-        return self.field + other
+        f = self.field if self.field else ''
+        o = other if other else ''
+        return f + o
 
     def __radd__(self, other):
-        return other + self.field
+        f = self.field if self.field else ''
+        o = other if other else ''
+        return o + f
 
     def _check_field(self):
-        return isinstance(self.field, str)
+        valid = isinstance(self.field, str)
+        msg = 'must be string' if not valid else ''
+        return valid, msg
+
+    def validation(self):
+        if self.field is None:
+            valid = not self.required
+            msg = 'is required but absent' if not valid else ''
+        elif not self.field:
+            valid = self.nullable
+            msg = 'must be not empty' if not valid else ''
+        else:
+            valid, msg = self._check_field()
+        return valid, msg
 
     @property
-    def valid(self):
-        if self.field is None:
-            return not self.required
-        if not self.field:
-            return self.nullable
-        return self._check_field()
+    def is_available(self):
+        return bool(self.field)
 
 
 class ArgumentsField(CharField):
@@ -71,7 +84,9 @@ class ArgumentsField(CharField):
         super().__init__(required, nullable)
 
     def _check_field(self):
-        return isinstance(self.field, dict)
+        valid = isinstance(self.field, dict)
+        msg = 'must be dictionary' if not valid else ''
+        return valid, msg
 
 
 class EmailField(CharField):
@@ -80,7 +95,12 @@ class EmailField(CharField):
 
     def _check_field(self):
         if isinstance(self.field, str):
-            return bool(re.match("^[^@\\s]+@[a-z0-9\\-\\.]+$", self.field, re.IGNORECASE))
+            valid = bool(re.match("^[^@\\s]+@[a-z0-9\\-\\.]+$", self.field, re.IGNORECASE))
+            msg = 'must be name@domain' if not valid else ''
+        else:
+            valid = False
+            msg = 'must be string'
+        return valid, msg
 
 
 class PhoneField(CharField):
@@ -91,7 +111,12 @@ class PhoneField(CharField):
         if isinstance(self.field, int):
             self.field = str(self.field)
         if isinstance(self.field, str):
-            return bool(re.match("^7\\d{10}$", self.field))
+            valid = bool(re.match("^7\\d{10}$", self.field))
+            msg = 'must contains 11 numbers and start with 7' if not valid else ''
+        else:
+            valid = False
+            msg = 'must be string or integer'
+        return valid, msg
 
 
 class DateField(CharField):
@@ -100,7 +125,12 @@ class DateField(CharField):
 
     def _check_field(self):
         if isinstance(self.field, str):
-            return bool(re.match("^\\d{2}\\.\\d{2}\\.\\d{4}$", self.field))
+            valid = bool(re.match("^\\d{2}\\.\\d{2}\\.\\d{4}$", self.field))
+            msg = 'must be set in format XX.XX.XXXX' if not valid else ''
+        else:
+            valid = False
+            msg = 'must be string'
+        return valid, msg
 
 
 class BirthDayField(CharField):
@@ -109,9 +139,17 @@ class BirthDayField(CharField):
 
     def _check_field(self):
         if isinstance(self.field, str):
-            if re.match("^\\d{2}\\.\\d{2}\\.\\d{4}$", self.field):
+            valid = re.match("^\\d{2}\\.\\d{2}\\.\\d{4}$", self.field)
+            if valid:
                 age = datetime.datetime.now() - datetime.datetime.strptime(self.field, '%d.%m.%Y')
-                return (age.days // 365) <= 70
+                valid = (age.days // 365) <= 70
+                msg = 'age must be less than 70 years old' if not valid else ''
+            else:
+                msg = 'must be set in format XX.XX.XXXX'
+        else:
+            valid = False
+            msg = 'must be string'
+        return valid, msg
 
 
 class GenderField(CharField):
@@ -119,7 +157,29 @@ class GenderField(CharField):
         super().__init__(required, nullable)
 
     def _check_field(self):
-        return self.field in (0, 1, 2)
+        if isinstance(self.field, int):
+            valid = self.field in (0, 1, 2)
+            msg = 'must be in (0, 1, 2)' if not valid else ''
+        else:
+            valid = False
+            msg = 'must be integer'
+        return valid, msg
+
+    def validation(self):
+        if self.field is None:
+            valid = not self.required
+            msg = 'is required but absent' if not valid else ''
+        elif self.field or self.field == 0:
+            valid, msg = self._check_field()
+        else:
+            valid = self.nullable
+            msg = 'must be not empty' if not valid else ''
+
+        return valid, msg
+
+    @property
+    def is_available(self):
+        return bool(self.field) or self.field == 0
 
 
 class ClientIDsField(CharField):
@@ -128,13 +188,36 @@ class ClientIDsField(CharField):
 
     def _check_field(self):
         if isinstance(self.field, list):
+            valid = True
             for i in self.field:
-                if not isinstance(i, int):
-                    return False
-            return True
+                valid = valid and isinstance(i, int)
+            msg = 'must contains only integers' if valid else ''
+        else:
+            valid = False
+            msg = 'must be list'
+        return valid, msg
 
 
-class ClientsInterestsRequest:
+class GetRequestFields:
+    fields = {}
+    
+    def __init__(self, data, context, store):
+        for key, value in self.fields.items():
+            value.field = data[key] if key in data else None
+
+        self.data = data
+        self.context = context
+        self.store = store
+        self.valid, self.response, self.code = True, '', None
+
+    def validation(self):
+        for field_name, field in self.fields.items():
+            v, m = field.validation()
+            self.valid = self.valid and v
+            self.response = f'{self.response}{field_name} not valid: {m}; ' if not v else self.response
+
+
+class ClientsInterestsRequest(GetRequestFields):
     client_ids = ClientIDsField(required=True, nullable=False)
     date = DateField(required=False, nullable=True)
 
@@ -143,26 +226,24 @@ class ClientsInterestsRequest:
         'date': date,
     }
 
-    def __init__(self, request_body, store):
-        self.request_body = request_body
-        self.store = store
-
-        for key, value in request_body.arguments.field.items():
-            if key in self.fields:
-                self.fields[key].field = value
+    def __init__(self, request_data, context, store):
+        super().__init__(request_data, context, store)
+        self.validation()
 
     def get_score(self):
-        return scoring.get_interests(
-            store=self.store,
-            cid=self.client_ids.field,
-        )
+        if not self.valid:
+            return self.response, INVALID_REQUEST
 
-    @property
-    def valid(self):
-        return self.client_ids.valid and self.date.valid
+        self.context['nclients'] = len(self.client_ids.field)
+
+        self.response = {}
+        for _id in self.client_ids.field:
+            self.response[_id] = scoring.get_interests(store=self.store, cid=self.client_ids.field)
+
+        return self.response, OK
 
 
-class OnlineScoreRequest:
+class OnlineScoreRequest(GetRequestFields):
     first_name = CharField(required=False, nullable=True)
     last_name = CharField(required=False, nullable=True)
     email = EmailField(required=False, nullable=True)
@@ -178,46 +259,49 @@ class OnlineScoreRequest:
         'birthday': birthday,
         'gender': gender,
     }
+    pairs = (('first_name', 'last_name'), ('email', 'phone'), ('birthday', 'gender'))
 
-    def __init__(self, request_body, store):
-        self.request_body = request_body
-        self.store = store
+    def __init__(self, request_data, context, store, admin=False):
+        super().__init__(request_data, context, store)
+        self.admin = admin
+        self.validation()
+        self.pairs_validation()
 
-        for key, value in request_body.arguments.field.items():
-            if key in self.fields:
-                self.fields[key].field = value
+    def pairs_validation(self):
+        pair_valid = False
+        msg = 'must be one pair of first_name-last_name, email-phone, birthday-gender'
+        for pair in self.pairs:
+            v = True
+            for f in pair:
+                v = v and self.fields[f].is_available
+            pair_valid = pair_valid or v
+        self.response = f'{self.response} {msg}' if not pair_valid else self.response
+        self.valid = self.valid and pair_valid
 
     def get_score(self):
-        if self.request_body.is_admin:
-            return 42
-        return scoring.get_score(
-            store=self.store,
-            phone=self.phone.field,
-            email=self.email.field,
-            birthday=self.birthday.field,
-            gender=self.gender.field,
-            first_name=self.first_name.field,
-            last_name=self.last_name.field,
-        )
+        self.context['has'] = list(self.data.keys())
 
-    @property
-    def valid(self):
-        return ((
-                    self.first_name.valid and
-                    self.last_name.valid and
-                    self.email.valid and
-                    self.phone.valid and
-                    self.birthday.valid and
-                    self.gender.valid
-                ) and
-                (
-                    (self.email.field and self.phone.field) or
-                    (self.first_name.field and self.last_name.field) or
-                    (self.gender.field and self.birthday.field)
-                ))
+        if not self.valid:
+            return self.response, INVALID_REQUEST
+
+        if self.admin:
+            self.response = {"score": 42}
+        else:
+            score = scoring.get_score(
+                store=self.store,
+                phone=self.phone.field,
+                email=self.email.field,
+                birthday=self.birthday.field,
+                gender=self.gender.field,
+                first_name=self.first_name.field,
+                last_name=self.last_name.field,
+            )
+            self.response = {"score": score}
+
+        return self.response, OK
 
 
-class MethodRequest:
+class MethodRequest(GetRequestFields):
     account = CharField(required=False, nullable=True)
     login = CharField(required=True, nullable=True)
     token = CharField(required=True, nullable=True)
@@ -232,18 +316,27 @@ class MethodRequest:
         'method': method
     }
 
-    def __init__(self, request):
-        for key, value in request.items():
-            if key in self.fields:
-                self.fields[key].field = value
+    def __init__(self, request_body, context, store):
+        super().__init__(request_body, context, store)
+        self.get_score_method = None
+        self.validation()
 
-    @property
-    def valid(self):
-        return (self.account.valid
-                and self.login.valid
-                and self.token.valid
-                and self.method.valid
-                and self.arguments.valid)
+    def get_score(self):
+        if not self.valid:
+            return self.response, INVALID_REQUEST
+
+        if self.method.field == 'online_score':
+            self.get_score_method = OnlineScoreRequest(
+                self.arguments.field, self.context, self.store, self.is_admin)
+        elif self.method.field == 'clients_interests':
+            self.get_score_method = ClientsInterestsRequest(
+                self.arguments.field, self.context, self.store)
+        else:
+            self.response = 'invalid request method'
+            return self.response, INVALID_REQUEST
+
+        self.response, self.code = self.get_score_method.get_score()
+        return self.response, self.code
 
     @property
     def is_admin(self):
@@ -266,29 +359,19 @@ def check_auth(request):
 
 def method_handler(request, ctx, store):
     response, code = None, None
-    method = None
-    request_body = MethodRequest(request['body'])
-    auth = check_auth(request_body)
+    method_request = MethodRequest(request['body'], ctx, store)
 
-    if auth:
-        if request_body.valid:
-            if request_body.method == 'online_score':
-                method = OnlineScoreRequest(request_body, store)
-            elif request_body.method == 'clients_interests':
-                method = ClientsInterestsRequest(request_body, store)
-            else:
-                code = INVALID_REQUEST
-        else:
-            code = INVALID_REQUEST
-    else:
+    if not method_request.valid:
+        code = INVALID_REQUEST
+        return method_request.response, code
+
+    auth = check_auth(method_request)
+
+    if not auth:
         code = FORBIDDEN
+        return ERRORS[code], code
 
-    if method:
-        if method.valid:
-            response = method.get_score()
-            code = OK
-        else:
-            code = INVALID_REQUEST
+    response, code = method_request.get_score()
 
     return response, code
 
