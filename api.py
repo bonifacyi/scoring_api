@@ -358,20 +358,18 @@ def check_auth(request):
 
 
 def method_handler(request, ctx, store):
-    response, code = None, None
+    logging.info('Start processing request')
     method_request = MethodRequest(request['body'], ctx, store)
+    auth = check_auth(method_request)
 
     if not method_request.valid:
         code = INVALID_REQUEST
-        return method_request.response, code
-
-    auth = check_auth(method_request)
-
-    if not auth:
+        response = method_request.response
+    elif not auth:
         code = FORBIDDEN
-        return ERRORS[code], code
-
-    response, code = method_request.get_score()
+        response = ERRORS[code]
+    else:
+        response, code = method_request.get_score()
 
     return response, code
 
